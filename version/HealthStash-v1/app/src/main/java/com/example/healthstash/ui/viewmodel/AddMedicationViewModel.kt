@@ -21,7 +21,6 @@ import com.example.healthstash.data.model.Medication
 import com.example.healthstash.data.model.TimeInputState
 import com.example.healthstash.data.repository.MedicationRepository
 import com.example.healthstash.util.AlarmReceiver
-import com.example.healthstash.util.NotificationHelper
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -183,9 +182,14 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
 
     @RequiresApi(Build.VERSION_CODES.S)
     private fun scheduleNotificationsForMedication(medicationWithId: Medication) {
-        // ... (鬧鐘設定邏輯保持不變，確認 medicationWithId.id 是有效的)
         val context = getApplication<Application>().applicationContext
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+        // ✅ 防呆：檢查精確鬧鐘權限
+        if (!alarmManager.canScheduleExactAlarms()) {
+            Toast.makeText(context, "尚未授權精確鬧鐘，無法設定提醒", Toast.LENGTH_SHORT).show()
+            return
+        }
 
         if (medicationWithId.id == 0 && medicationWithId.usageTimes.isNotEmpty()) {
             Toast.makeText(context, "無法設定提醒：藥品ID無效", Toast.LENGTH_SHORT).show()
@@ -194,58 +198,52 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
 
         medicationWithId.usageTimes.forEachIndexed { index, timeString ->
             val timeParts = timeString.split(":")
-            if (timeParts.size == 2) {
-                val hour = timeParts[0].toIntOrNull()
-                val minute = timeParts[1].toIntOrNull()
+            val hour = timeParts.getOrNull(0)?.toIntOrNull()
+            val minute = timeParts.getOrNull(1)?.toIntOrNull()
 
-                if (hour != null && minute != null) { // 這裡的 hour 和 minute 已經是驗證過的
-                    val calendar = Calendar.getInstance().apply {
-                        set(Calendar.HOUR_OF_DAY, hour)
-                        set(Calendar.MINUTE, minute)
-                        set(Calendar.SECOND, 0)
-                        set(Calendar.MILLISECOND, 0)
-                        if (before(Calendar.getInstance())) {
-                            add(Calendar.DATE, 1)
-                        }
+            if (hour != null && minute != null) {
+                val calendar = Calendar.getInstance().apply {
+                    set(Calendar.HOUR_OF_DAY, hour)
+                    set(Calendar.MINUTE, minute)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                    if (before(Calendar.getInstance())) {
+                        add(Calendar.DATE, 1) // 設為明天
                     }
+                }
 
-                    val intent = Intent(context, AlarmReceiver::class.java).apply {
-                        action = "com.example.health stash.TAKE_MEDICATION"
-                        putExtra(NotificationHelper.EXTRA_MEDICATION_ID, medicationWithId.id)
-                        putExtra(NotificationHelper.EXTRA_MEDICATION_NAME, medicationWithId.name)
-                        putExtra(NotificationHelper.EXTRA_NOTIFICATION_ID, medicationWithId.id * 1000 + index + (System.currentTimeMillis() / 10000).toInt())
-                    }
-                    val pendingIntentRequestCode = medicationWithId.id * 1000 + index // 唯一的requestCode
+                val intent = Intent(context, AlarmReceiver::class.java).apply {
+                    putExtra("title", "用藥提醒")
+                    putExtra("message", "${medicationWithId.name} 的用藥時間到了")
+                }
 
-                    val pendingIntent = PendingIntent.getBroadcast(
-                        context,
-                        pendingIntentRequestCode,
-                        intent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                val pendingIntentRequestCode = medicationWithId.id * 1000 + index
+
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    pendingIntentRequestCode,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                try {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
                     )
-                    try {
-                        if (alarmManager.canScheduleExactAlarms()) {
-                            alarmManager.setRepeating(
-                                AlarmManager.RTC_WAKEUP,
-                                calendar.timeInMillis,
-                                AlarmManager.INTERVAL_DAY,
-                                pendingIntent
-                            )
-                        } else {
-                            alarmManager.setInexactRepeating(
-                                AlarmManager.RTC_WAKEUP,
-                                calendar.timeInMillis,
-                                AlarmManager.INTERVAL_DAY,
-                                pendingIntent
-                            )
-                        }
-                    } catch (se: SecurityException) {
-                        Toast.makeText(context, "設定鬧鐘權限不足: ${se.message}", Toast.LENGTH_LONG).show()
-                    }
+                } catch (_: SecurityException) {
+                    Toast.makeText(
+                        context,
+                        "設定提醒失敗：未授權精確鬧鐘",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
         }
     }
+
+
 
     fun clearForm() {
         medicationName = ""

@@ -103,6 +103,11 @@ fun EditMedicationScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            val isFormValid = medicationNameError == null &&
+                    totalQuantityError == null &&
+                    viewModel.medicationName.isNotBlank() &&
+                    viewModel.totalQuantityInput.isNotBlank()
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -226,11 +231,6 @@ fun EditMedicationScreen(
 
             Spacer(Modifier.height(32.dp))
 
-            val isFormSubmittable = medicationNameError == null && totalQuantityError == null &&
-                    viewModel.medicationName.isNotBlank() && viewModel.totalQuantityInput.isNotBlank() &&
-                    usageTimesList.any { it.isFilled() && it.validate() == null } &&
-                    usageTimesList.all { !it.isFilled() || it.validate() == null }
-
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
@@ -250,7 +250,7 @@ fun EditMedicationScreen(
                             navController.popBackStack()
                         }
                     },
-                    enabled = isFormSubmittable
+                    enabled = isFormValid
                 ) {
                     Icon(Icons.Filled.Done, contentDescription = "完成")
                     Spacer(Modifier.width(ButtonDefaults.IconSpacing))
@@ -275,6 +275,3 @@ fun EditMedicationScreen(
         )
     }
 }
-
-// TimeInputRow 和 TimeDigitTextField 與 AddMedicationScreen 中的定義相同，此處不再重複
-// 確保它們可以被此檔案訪問 (例如，放在共用的 ui/components 包中，或在此檔案中重新定義)

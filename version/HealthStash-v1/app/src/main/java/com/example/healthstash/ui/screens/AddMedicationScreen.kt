@@ -105,6 +105,11 @@ fun AddMedicationScreen(
                 .verticalScroll(rememberScrollState()), // 主 Column 滾動
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            val isFormValid = medicationNameError == null &&
+                    totalQuantityError == null &&
+                    viewModel.medicationName.isNotBlank() &&
+                    viewModel.totalQuantityInput.isNotBlank()
+
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -323,7 +328,8 @@ fun AddMedicationScreen(
                             Toast.makeText(context, "${viewModel.medicationName} 已新增", Toast.LENGTH_SHORT).show()
                             navController.popBackStack()
                         }
-                    }
+                    },
+                    enabled = isFormValid
                 ) {
                     Icon(Icons.Filled.Done, contentDescription = "新增")
                     Spacer(Modifier.width(ButtonDefaults.IconSpacing))

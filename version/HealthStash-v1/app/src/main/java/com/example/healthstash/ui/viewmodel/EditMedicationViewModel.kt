@@ -153,29 +153,23 @@ class EditMedicationViewModel(
     private fun validateAllInputsForUpdate(): Boolean {
         onMedicationNameChange(medicationName)
         onTotalQuantityChange(totalQuantityInput)
-        var oneValidTimeExists = false
+
         var allAttemptedTimesAreValid = true
 
         usageTimesList.forEachIndexed { index, timeState ->
-            val validationError = timeState.validate()
-            usageTimesList[index] = timeState.copy(error = validationError) // Update error state for UI
-            if (timeState.isFilled()) {
-                if (validationError == null) {
-                    oneValidTimeExists = true
-                } else {
-                    allAttemptedTimesAreValid = false // If any filled time is invalid
-                }
+            val validationError = if (timeState.isFilled()) timeState.validate() else null
+            usageTimesList[index] = timeState.copy(error = validationError) // 更新 UI 錯誤狀態
+
+            if (timeState.isFilled() && validationError != null) {
+                allAttemptedTimesAreValid = false
             }
         }
-        if (!oneValidTimeExists && usageTimesList.any { it.h1.isNotBlank() || it.h2.isNotBlank() || it.m1.isNotBlank() || it.m2.isNotBlank() }) {
-            // If user started filling a time but it's not valid, and no other valid time exists
-            allAttemptedTimesAreValid = false
-        }
 
-
-        return medicationNameError == null && totalQuantityError == null &&
-                medicationName.isNotBlank() && totalQuantityInput.isNotBlank() &&
-                oneValidTimeExists && allAttemptedTimesAreValid
+        return medicationNameError == null &&
+                totalQuantityError == null &&
+                medicationName.isNotBlank() &&
+                totalQuantityInput.isNotBlank() &&
+                allAttemptedTimesAreValid
     }
 
     @RequiresApi(Build.VERSION_CODES.S)
@@ -189,11 +183,6 @@ class EditMedicationViewModel(
             val name = medicationName.trim()
             val quantity = totalQuantityInput.toInt()
             val validTimes = usageTimesList.mapNotNull { it.toTimeString() }
-
-            if (validTimes.isEmpty()) { // Should be caught by validateAllInputsForUpdate
-                Toast.makeText(getApplication(), "請至少輸入一個有效的用藥時間", Toast.LENGTH_SHORT).show()
-                return
-            }
 
             // 處理剩餘量：如果總量減少且少於原剩餘量，則剩餘量等於新總量。否則按比例或保持。
             // 簡單策略：如果總量減少，剩餘量不能超過新總量。如果總量增加，維持原剩餘量或按比例增加。
@@ -243,35 +232,56 @@ class EditMedicationViewModel(
 
     @RequiresApi(Build.VERSION_CODES.S)
     private fun scheduleNotificationsForMedication(medicationWithId: Medication) {
-        // ... (與 AddMedicationViewModel 中的邏輯相同或提取為共用 Util)
         val context = getApplication<Application>().applicationContext
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        // ... (完整的鬧鐘設定邏輯)
+
+        if (!alarmManager.canScheduleExactAlarms()) {
+            Toast.makeText(context, "尚未授權精確鬧鐘，無法設定提醒", Toast.LENGTH_SHORT).show()
+            return
+        }
+
         medicationWithId.usageTimes.forEachIndexed { index, timeString ->
             val timeParts = timeString.split(":")
-            if (timeParts.size == 2) {
-                val hour = timeParts[0].toIntOrNull(); val minute = timeParts[1].toIntOrNull()
-                if (hour != null && minute != null) {
-                    val calendar = Calendar.getInstance().apply {
-                        set(Calendar.HOUR_OF_DAY, hour); set(Calendar.MINUTE, minute); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-                        if (before(Calendar.getInstance())) add(Calendar.DATE, 1)
-                    }
-                    val intent = Intent(context, AlarmReceiver::class.java).apply {
-                        action = "com.example.health stash.TAKE_MEDICATION"
-                        putExtra(NotificationHelper.EXTRA_MEDICATION_ID, medicationWithId.id)
-                        putExtra(NotificationHelper.EXTRA_MEDICATION_NAME, medicationWithId.name)
-                        putExtra(NotificationHelper.EXTRA_NOTIFICATION_ID, medicationWithId.id * 1000 + index + (System.currentTimeMillis() / 10000).toInt())
-                    }
-                    val reqCode = medicationWithId.id * 1000 + index
-                    val pIntent = PendingIntent.getBroadcast(context, reqCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-                    try {
-                        if(alarmManager.canScheduleExactAlarms()) alarmManager.setRepeating(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, AlarmManager.INTERVAL_DAY, pIntent)
-                        else alarmManager.setInexactRepeating(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, AlarmManager.INTERVAL_DAY, pIntent)
-                    } catch (se: SecurityException) { Toast.makeText(context, "設定鬧鐘權限不足: ${se.message}", Toast.LENGTH_LONG).show() }
+            val hour = timeParts.getOrNull(0)?.toIntOrNull()
+            val minute = timeParts.getOrNull(1)?.toIntOrNull()
+
+            if (hour != null && minute != null) {
+                val calendar = Calendar.getInstance().apply {
+                    set(Calendar.HOUR_OF_DAY, hour)
+                    set(Calendar.MINUTE, minute)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                    if (before(Calendar.getInstance())) add(Calendar.DATE, 1)
+                }
+
+                val intent = Intent(context, AlarmReceiver::class.java).apply {
+                    action = "com.example.healthstash.TAKE_MEDICATION"
+                    putExtra(NotificationHelper.EXTRA_MEDICATION_ID, medicationWithId.id)
+                    putExtra(NotificationHelper.EXTRA_MEDICATION_NAME, medicationWithId.name)
+                    putExtra(NotificationHelper.EXTRA_NOTIFICATION_ID, medicationWithId.id * 1000 + index)
+                }
+
+                val requestCode = medicationWithId.id * 1000 + index
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    requestCode,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+
+                try {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        calendar.timeInMillis,
+                        pendingIntent
+                    )
+                } catch (e: SecurityException) {
+                    Toast.makeText(context, "設定鬧鐘失敗：${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
+
 
     private fun cancelScheduledNotifications(medication: Medication) {
         // ... (與 AddMedicationViewModel 中的邏輯相同或提取為共用 Util)
