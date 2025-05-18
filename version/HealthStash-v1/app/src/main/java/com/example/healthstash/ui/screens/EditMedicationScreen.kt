@@ -61,11 +61,7 @@ fun EditMedicationScreen(
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri ->
-            uri?.let {
-                viewModel.imageUri = it
-                viewModel.selectedDefaultImageResId = null
-                viewModel.currentIconStringFromDb = null // 表示用戶已做出新的圖示選擇
-            }
+            uri?.let { viewModel.onGalleryImageSelected(it) } // 移除 context 參數，ViewModel 內部獲取
         }
     )
     val defaultImageResList = listOf(
@@ -78,6 +74,12 @@ fun EditMedicationScreen(
     val usageTimesList = viewModel.usageTimesList
 
     var showDeleteDialog by remember { mutableStateOf(false) }
+
+    // 從 ViewModel 獲取用於顯示的圖示狀態
+    val displayImageUri by rememberUpdatedState(viewModel.imageUri)
+    val displaySelectedDefaultResId by rememberUpdatedState(viewModel.selectedDefaultImageResId)
+    val initialDbIconUri by rememberUpdatedState(viewModel.initialIconUriString)
+    val initialDbDrawableResId by rememberUpdatedState(viewModel.initialIconDrawableResId)
 
     Scaffold(
         topBar = {
@@ -138,44 +140,35 @@ fun EditMedicationScreen(
                     // 當前圖示預覽
                     Box(
                         modifier = Modifier.size(96.dp).clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .align(Alignment.CenterHorizontally),
+                            .background(MaterialTheme.colorScheme.surfaceVariant).align(Alignment.CenterHorizontally),
                         contentAlignment = Alignment.Center
                     ) {
                         when {
-                            viewModel.imageUri != null -> {
-                                AsyncImage(model = viewModel.imageUri, contentDescription = "新選擇圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            displayImageUri != null -> { // 1. 用戶新選了相簿圖 (已複製到內部)
+                                AsyncImage(model = displayImageUri, contentDescription = "新選擇的圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             }
-                            viewModel.selectedDefaultImageResId != null -> {
-                                Image(painter = painterResource(id = viewModel.selectedDefaultImageResId!!), contentDescription = "新選擇預設圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            displaySelectedDefaultResId != null -> { // 2. 用戶新選了預設圖示
+                                Image(painter = painterResource(id = displaySelectedDefaultResId!!), contentDescription = "新選擇的預設圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             }
-                            else -> {
-                                viewModel.currentIconStringFromDb?.let { iconStr ->
-                                    val maybeUri = try {
-                                        iconStr.toUri() } catch (_: Exception) { null }
-                                    if (maybeUri != null && (maybeUri.scheme == "content" || maybeUri.scheme == "file")) {
-                                        AsyncImage(model = maybeUri, contentDescription = "目前圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                                    } else {
-                                        val resId = LocalContext.current.resources.getIdentifier(iconStr, "drawable", LocalContext.current.packageName)
-                                        if (resId != 0) {
-                                            Image(painter = painterResource(id = resId), contentDescription = "目前圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                                        } else {
-                                            Icon(Icons.Filled.Medication, "預設圖示", Modifier.size(48.dp))
-                                        }
-                                    }
-                                } ?: Icon(Icons.Filled.Medication, "預設圖示", Modifier.size(48.dp))
+                            !initialDbIconUri.isNullOrBlank() -> { // 3. 顯示從 DB 加載的 URI 圖示
+                                AsyncImage(model = initialDbIconUri!!.toUri(), contentDescription = "目前藥品圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            }
+                            initialDbDrawableResId != null && initialDbDrawableResId != 0 -> { // 4. 顯示從 DB 加載的 Drawable 圖示
+                                Image(painter = painterResource(id = initialDbDrawableResId!!), contentDescription = "目前藥品圖片", modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            }
+                            else -> { // 5. 通用預設圖示
+                                Icon(Icons.Filled.Medication, "預設藥品圖示", modifier = Modifier.size(48.dp))
                             }
                         }
                     }
-
                     Spacer(Modifier.height(8.dp))
-                    // 圖片選擇列表 (與 AddMedicationScreen 相同)
+                    // 圖片選擇列表
                     Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Box(modifier = Modifier.size(96.dp).clip(CircleShape).background(Color.White).clickable {
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU || readStoragePermission.status.isGranted) {
                                 photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                             } else { readStoragePermission.launchPermissionRequest() }
-                        }.border(2.dp, if (viewModel.imageUri != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape), contentAlignment = Alignment.Center) {
+                        }.border(2.dp, if (displayImageUri != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape), contentAlignment = Alignment.Center) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(Icons.Filled.PhotoLibrary, "從相簿", Modifier.size(32.dp))
                                 Text("從相簿", style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.Center)
@@ -184,10 +177,9 @@ fun EditMedicationScreen(
                         defaultImageResList.forEach { resId ->
                             Image(painter = painterResource(id = resId), contentDescription = "預設圖示 $resId",
                                 modifier = Modifier.size(96.dp).clip(CircleShape).background(Color.White)
-                                    .border(2.dp, if (viewModel.selectedDefaultImageResId == resId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape)
-                                    .clickable {
-                                        viewModel.selectedDefaultImageResId = resId; viewModel.imageUri = null; viewModel.currentIconStringFromDb = null
-                                    }, contentScale = ContentScale.Crop
+                                    .border(2.dp, if (displaySelectedDefaultResId == resId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, CircleShape)
+                                    .clickable { viewModel.onDefaultImageSelected(resId) }, // 使用新的 ViewModel 方法
+                                contentScale = ContentScale.Crop
                             )
                         }
                     }

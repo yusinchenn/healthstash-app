@@ -1,18 +1,13 @@
 package com.example.healthstash.ui.viewmodel
 
-import android.app.AlarmManager
-import android.app.Application
-import android.app.PendingIntent
-import android.content.Context
-import android.content.Intent
+import android.app.*
+import android.content.*
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import androidx.annotation.RequiresApi
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.healthstash.R
@@ -21,27 +16,30 @@ import com.example.healthstash.data.model.Medication
 import com.example.healthstash.data.model.TimeInputState
 import com.example.healthstash.data.repository.MedicationRepository
 import com.example.healthstash.util.AlarmReceiver
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
-import java.util.Calendar
+import kotlinx.coroutines.*
+import java.io.File
+import java.io.FileOutputStream
+import java.util.*
 
 class AddMedicationViewModel(application: Application) : AndroidViewModel(application) {
+
+    // Repository：負責與資料庫互動
     private val repository: MedicationRepository
 
-    // Input states
+    // --- 使用者輸入狀態 ---
     var medicationName by mutableStateOf("")
     var totalQuantityInput by mutableStateOf("")
     var imageUri by mutableStateOf<Uri?>(null)
     var selectedDefaultImageResId by mutableStateOf<Int?>(null)
 
-    // *** 用於多個時間輸入的新狀態 ***
-    val usageTimesList = mutableStateListOf(TimeInputState()) // 使用 mutableStateListOf 以便 Compose 能觀察到列表內部元素的變化
+    // 多筆服藥時間輸入欄位的狀態
+    val usageTimesList = mutableStateListOf(TimeInputState())
 
-    // Error states for validation
+    // --- 表單錯誤訊息狀態 ---
     var medicationNameError by mutableStateOf<String?>(null)
     var totalQuantityError by mutableStateOf<String?>(null)
 
+    // 用於防止過度查詢的工作參考
     private var nameCheckJob: Job? = null
 
     init {
@@ -49,6 +47,42 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
         repository = MedicationRepository(database.medicationDao())
     }
 
+    // --- 圖片儲存邏輯 ---
+    fun saveImageFromUri(context: Context, sourceUri: Uri): Uri? {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(sourceUri) ?: return null
+            val imageDir = File(context.filesDir, "medication_images")
+            if (!imageDir.exists()) imageDir.mkdirs()
+
+            val imageFile = File(imageDir, "${UUID.randomUUID()}.jpg")
+            val outputStream = FileOutputStream(imageFile)
+
+            inputStream.copyTo(outputStream)
+            inputStream.close()
+            outputStream.close()
+
+            Uri.fromFile(imageFile)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    fun onGalleryImageSelected(uri: Uri, context: Context) {
+        viewModelScope.launch(Dispatchers.IO) { // 將文件操作移至 IO 線程
+            val copiedUri = saveImageFromUri(context, uri) // 呼叫您新增的儲存方法
+            launch(Dispatchers.Main) { // 切回主線程更新 UI 狀態
+                if (copiedUri != null) {
+                    imageUri = copiedUri // 更新 viewModel 的 imageUri 為複製後的 URI
+                    selectedDefaultImageResId = null // 清除預設圖示的選擇
+                } else {
+                    Toast.makeText(context, "圖片儲存失敗", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // --- 名稱輸入邏輯與即時驗證 ---
     fun onMedicationNameChange(newName: String) {
         medicationName = newName
         medicationNameError = null
@@ -58,20 +92,23 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
             nameCheckJob?.cancel()
             return
         }
+
         if (newName.isBlank()) {
             medicationNameError = "藥品名稱不能為空"
             nameCheckJob?.cancel()
             return
         }
+
         nameCheckJob?.cancel()
         nameCheckJob = viewModelScope.launch {
-            delay(500)
+            delay(500) // 等待使用者輸入穩定
             if (repository.medicationExists(newName.trim())) {
                 medicationNameError = "項目已存在"
             }
         }
     }
 
+    // --- 數量輸入驗證 ---
     fun onTotalQuantityChange(newQuantity: String) {
         totalQuantityInput = newQuantity
         totalQuantityError = null
@@ -83,7 +120,7 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-    // --- 方法來管理時間輸入列表 ---
+    // --- 管理時間欄位 ---
     fun addTimeField() {
         if (usageTimesList.size < 4) {
             usageTimesList.add(TimeInputState())
@@ -115,11 +152,9 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
             usageTimesList[index] = updatedTime.copy(error = updatedTime.validate())
         }
     }
-    // --- 時間輸入管理結束 ---
 
-
+    // --- 驗證整份表單 ---
     private fun validateAllInputs(): Boolean {
-        // 觸發驗證
         onMedicationNameChange(medicationName)
         onTotalQuantityChange(totalQuantityInput)
 
@@ -134,9 +169,11 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
 
         return medicationNameError == null &&
                 totalQuantityError == null &&
-                allTimesValid // 所有填寫的時間都要有效，但不要求必填
+                allTimesValid
     }
 
+
+    // --- 新增藥品並設定提醒 ---
     @RequiresApi(Build.VERSION_CODES.S)
     fun addMedication(onSuccess: () -> Unit) {
         if (!validateAllInputs()) {
@@ -145,33 +182,49 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
         }
 
         val name = medicationName.trim()
-        val quantity = totalQuantityInput.toInt() // 已在驗證中檢查
-
+        val quantity = totalQuantityInput.toInt()
         val validTimes = usageTimesList.mapNotNull { it.toTimeString() }
-        if (validTimes.isEmpty()) {
-            Toast.makeText(
-                getApplication(),
-                "尚未設定提醒時間，將不會通知您",
-                Toast.LENGTH_SHORT
-            ).show()
+
+        if (validTimes.isEmpty() && usageTimesList.any { it.isFilled() }) { // 如果用戶嘗試填寫時間但都無效
+            Toast.makeText(getApplication(), "請輸入有效的用藥時間", Toast.LENGTH_SHORT).show()
+            return
         }
-        val iconResId = selectedDefaultImageResId ?: R.drawable.ic_default_med
+        // 如果 validTimes 為空但 usageTimesList 也為空(或都未填寫)，可以彈出"尚未設定提醒時間"的 Toast
+        if (validTimes.isEmpty()) {
+            Toast.makeText(getApplication(), "尚未設定提醒時間，將不會通知您", Toast.LENGTH_SHORT).show()
+        }
+
+        // --- 決定最終的圖示資訊 ---
+        var finalIconUriString: String? = null
+        @DrawableRes var finalIconDrawableResId: Int? = null
+
+        if (imageUri != null) {
+            // imageUri 此時應該是 saveImageFromUri 返回的、指向應用內部儲存的 URI
+            finalIconUriString = imageUri.toString()
+            finalIconDrawableResId = null // 清除預設圖示ID，因為 URI 優先
+        } else if (selectedDefaultImageResId != null) {
+            finalIconDrawableResId = selectedDefaultImageResId
+            finalIconUriString = null // 清除 URI
+        } else {
+            // 如果兩者都為 null (用戶未選擇任何圖示)，則使用應用程式的預設圖示
+            finalIconDrawableResId = R.drawable.ic_default_med // 確保你有這個預設圖示
+            finalIconUriString = null
+        }
 
         val medicationToInsert = Medication(
             name = name,
-            iconResId = iconResId.toString(),
+            iconUriString = finalIconUriString,       // 使用處理後的 URI 字串
+            iconDrawableResId = finalIconDrawableResId, // 使用處理後的 Drawable ID
             usageTimes = validTimes,
             totalQuantity = quantity,
-            remainingQuantity = quantity, // 🔁 原本是 String，現在直接儲存 Int
-            imageUri = imageUri?.toString()
+            remainingQuantity = quantity
         )
-
 
         viewModelScope.launch {
             val newMedicationId = repository.insert(medicationToInsert)
             if (newMedicationId > 0) {
                 val insertedMedication = medicationToInsert.copy(id = newMedicationId.toInt())
-                scheduleNotificationsForMedication(insertedMedication)
+                scheduleNotificationsForMedication(insertedMedication) // 確保鬧鐘設定使用正確的 ID
                 onSuccess()
             } else {
                 Toast.makeText(getApplication(), "新增藥品失敗", Toast.LENGTH_SHORT).show()
@@ -180,12 +233,12 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
+    // --- 設定鬧鐘提醒 ---
     @RequiresApi(Build.VERSION_CODES.S)
     private fun scheduleNotificationsForMedication(medicationWithId: Medication) {
         val context = getApplication<Application>().applicationContext
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        // ✅ 防呆：檢查精確鬧鐘權限
         if (!alarmManager.canScheduleExactAlarms()) {
             Toast.makeText(context, "尚未授權精確鬧鐘，無法設定提醒", Toast.LENGTH_SHORT).show()
             return
@@ -243,16 +296,14 @@ class AddMedicationViewModel(application: Application) : AndroidViewModel(applic
         }
     }
 
-
-
+    // --- 清除表單欄位 ---
     fun clearForm() {
         medicationName = ""
         totalQuantityInput = ""
         imageUri = null
         selectedDefaultImageResId = null
         usageTimesList.clear()
-        usageTimesList.add(TimeInputState()) // 重置為一個空的時間輸入
-
+        usageTimesList.add(TimeInputState())
         medicationNameError = null
         totalQuantityError = null
         nameCheckJob?.cancel()

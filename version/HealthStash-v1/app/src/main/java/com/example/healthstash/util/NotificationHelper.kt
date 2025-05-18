@@ -1,4 +1,3 @@
-
 package com.example.healthstash.util
 
 import android.app.NotificationChannel
@@ -26,7 +25,7 @@ class NotificationHelper(private val context: Context) {
             val notificationId = System.currentTimeMillis().toInt()
 
             val notification = NotificationCompat.Builder(context, CHANNEL_ID_MEDICATION_REMINDER)
-                .setSmallIcon(R.drawable.ic_notification) // ← 必須設圖示
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(message)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

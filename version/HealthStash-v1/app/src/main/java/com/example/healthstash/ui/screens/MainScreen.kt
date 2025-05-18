@@ -31,8 +31,8 @@ fun MainScreen(
     viewModel: MainViewModel,
     navController: NavHostController
 ) {
-    val medications by viewModel.medications.collectAsState()
-    val context = LocalContext.current
+    val medications by viewModel.medications.collectAsState() // 觀察並收集藥品資料
+    val context = LocalContext.current // 取得當前 Context 用於顯示 Toast
 
     // 通知權限請求 (Android 13+)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -43,22 +43,18 @@ fun MainScreen(
             }
         }
         if (notificationPermissionState.status.shouldShowRationale) {
-            // 可以顯示一個對話框解釋為何需要此權限
             Toast.makeText(context, "需要通知權限以提醒您用藥", Toast.LENGTH_LONG).show()
         }
     }
     // 精確鬧鐘權限 (Android 12+)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         //val scheduleExactAlarmPermission = rememberPermissionState(Manifest.permission.SCHEDULE_EXACT_ALARM)
-        // 注意：SCHEDULE_EXACT_ALARM 是特殊權限，通常需要引導用戶到設定頁面開啟
-        // 這裡僅為示意，實際處理會更複雜
         LaunchedEffect(Unit) {
             // if (!scheduleExactAlarmPermission.status.isGranted) {
             // 通常不會直接 launchPermissionRequest，而是引導到設定
             // }
         }
     }
-
 
     Scaffold(
         topBar = {
@@ -107,7 +103,7 @@ fun MainScreen(
                     items(medications, key = { it.id }) { medication ->
                         MedicationCard(
                             medication = medication,
-                            onEditClick = { med -> // lambda 參數改為 med，更清晰
+                            onEditClick = { med ->
                                 // *** 導航到編輯畫面並傳遞 ID ***
                                 navController.navigate(Screen.EditMedicationScreen.createRoute(med.id))
                             },

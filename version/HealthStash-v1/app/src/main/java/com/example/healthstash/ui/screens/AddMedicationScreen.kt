@@ -7,6 +7,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -39,8 +42,8 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
@@ -48,18 +51,15 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.example.healthstash.R
 import com.example.healthstash.data.model.TimeInputState
 import com.example.healthstash.ui.viewmodel.AddMedicationViewModel
-import com.google.accompanist.permissions.ExperimentalPermissionsApi
-import com.google.accompanist.permissions.isGranted
-import com.google.accompanist.permissions.rememberPermissionState
 
 @RequiresApi(Build.VERSION_CODES.S)
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
@@ -69,23 +69,31 @@ fun AddMedicationScreen(
     viewModel: AddMedicationViewModel
 ) {
     val context = LocalContext.current
+
+    // 圖片選擇器（相簿）
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia(),
         onResult = { uri ->
             uri?.let {
-                viewModel.imageUri = it
-                viewModel.selectedDefaultImageResId = null
+                viewModel.onGalleryImageSelected(it, context)
             }
         }
     )
+
+    // 預設圖片資源 ID 清單
     val defaultImageResList = listOf(
         R.drawable.med1, R.drawable.med2, R.drawable.med3, R.drawable.med4, R.drawable.med5
     )
+
+    // 權限處理：讀取相簿權限
     val readStoragePermission = rememberPermissionState(Manifest.permission.READ_EXTERNAL_STORAGE)
+
+    // 錯誤訊息與狀態綁定
     val medicationNameError by rememberUpdatedState(viewModel.medicationNameError)
     val totalQuantityError by rememberUpdatedState(viewModel.totalQuantityError)
     val usageTimesList = viewModel.usageTimesList
 
+    // 主結構：包含 AppBar 與整體內容
     Scaffold(
         topBar = {
             TopAppBar(

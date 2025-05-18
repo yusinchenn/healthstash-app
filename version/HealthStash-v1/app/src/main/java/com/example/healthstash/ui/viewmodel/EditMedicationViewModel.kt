@@ -7,28 +7,25 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import androidx.annotation.RequiresApi
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.SavedStateHandle
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.ViewModelProvider
-import androidx.lifecycle.viewModelScope
+import androidx.compose.runtime.*
+import androidx.lifecycle.*
 import com.example.healthstash.data.local.AppDatabase
 import com.example.healthstash.data.model.Medication
 import com.example.healthstash.data.model.TimeInputState
 import com.example.healthstash.data.repository.MedicationRepository
+import com.example.healthstash.R
 import com.example.healthstash.util.AlarmReceiver
 import com.example.healthstash.util.NotificationHelper
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 import java.util.Calendar
+import java.util.UUID
 
 class EditMedicationViewModel(
     application: Application,
@@ -36,17 +33,24 @@ class EditMedicationViewModel(
 ) : AndroidViewModel(application) {
 
     private val repository: MedicationRepository
-    val medicationId: Int = savedStateHandle.get<Int>("medicationId")!! // 從導航參數獲取
-
-    private var originalMedication: Medication? = null
+    val medicationId: Int = savedStateHandle.get<Int>("medicationId")!! // 取得要編輯的藥品 ID
+    private var originalMedication: Medication? = null // 儲存原始藥品資訊以利比對與更新
 
     // UI 狀態 (與 AddMedicationViewModel 類似)
     var medicationName by mutableStateOf("")
     var totalQuantityInput by mutableStateOf("")
-    var imageUri by mutableStateOf<Uri?>(null) // 用戶新選擇的圖片URI
-    var selectedDefaultImageResId by mutableStateOf<Int?>(null) // 用戶新選擇的預設圖片ID
-    var currentIconStringFromDb by mutableStateOf<String?>(null)
+    // --- 圖示狀態 ---
+    var imageUri by mutableStateOf<Uri?>(null) // 用戶從相簿新選擇的圖片 (複製到內部儲存後的 URI)
+    @get:DrawableRes
+    var selectedDefaultImageResId by mutableStateOf<Int?>(null) // 用戶從列表新選擇的預設圖示 ID
 
+    // --- 用於在 UI 中顯示 "目前" 圖示的狀態 (從DB加載的原始圖示資訊) ---
+    // 這兩個狀態讓 UI 可以知道最初加載的是 URI 還是 Drawable ID
+    var initialIconUriString by mutableStateOf<String?>(null)
+    @get:DrawableRes
+    var initialIconDrawableResId by mutableStateOf<Int?>(null)
+
+    // 使用時間欄位列表
     val usageTimesList = mutableStateListOf<TimeInputState>()
 
     // 錯誤狀態
@@ -61,6 +65,55 @@ class EditMedicationViewModel(
         loadMedicationDetails()
     }
 
+    // --- 新增：圖片儲存邏輯 (與 AddMedicationViewModel 相同) ---
+    private fun saveImageFromUriToInternalStorage(context: Context, sourceUri: Uri): Uri? {
+        return try {
+            val inputStream = context.contentResolver.openInputStream(sourceUri) ?: return null
+            // 創建一個更唯一的子目錄名，例如基於 medicationId (如果需要在藥品刪除時清理)
+            // 或者一個通用的圖片目錄
+            val imageDir = File(context.filesDir, "medication_images")
+            if (!imageDir.exists()) imageDir.mkdirs()
+
+            val imageFile = File(imageDir, "${UUID.randomUUID()}.jpg") // 或其他命名策略
+            val outputStream = FileOutputStream(imageFile)
+
+            inputStream.use { input ->
+                outputStream.use { output ->
+                    input.copyTo(output)
+                }
+            }
+            Uri.fromFile(imageFile) // 返回 file:/// URI
+        } catch (e: Exception) {
+            Log.e("EditMedicationVM", "Error saving image from URI: $sourceUri", e)
+            null
+        }
+    }
+
+    fun onGalleryImageSelected(uri: Uri) { // Context 可以從 getApplication() 獲取
+        viewModelScope.launch(Dispatchers.IO) {
+            val copiedUri = saveImageFromUriToInternalStorage(getApplication(), uri)
+            launch(Dispatchers.Main) {
+                if (copiedUri != null) {
+                    imageUri = copiedUri // 用戶選擇了新的相簿圖片 (已複製)
+                    selectedDefaultImageResId = null // 清除預設圖示選擇
+                    // initialIconUriString = null // 清除初始DB圖示，因為用戶已做新選擇
+                    // initialIconDrawableResId = null
+                } else {
+                    Toast.makeText(getApplication(), "圖片儲存失敗", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    fun onDefaultImageSelected(@DrawableRes resId: Int) {
+        selectedDefaultImageResId = resId // 用戶選擇了新的預設圖示
+        imageUri = null // 清除相簿圖片選擇
+        // initialIconUriString = null
+        // initialIconDrawableResId = null
+    }
+    // --- 圖片邏輯結束 ---
+
+    // 載入藥品詳細資訊並填入 UI 狀態
     private fun loadMedicationDetails() {
         viewModelScope.launch {
             originalMedication = repository.getMedicationById(medicationId).firstOrNull()
@@ -68,41 +121,30 @@ class EditMedicationViewModel(
                 medicationName = med.name
                 totalQuantityInput = med.totalQuantity.toString()
 
-                // 初始化圖示狀態
-                imageUri = null // 先重置用戶選擇的 URI
-                selectedDefaultImageResId = null // 先重置用戶選擇的預設圖示 ID
+                // 初始化圖示狀態 (重設用戶在UI上的當前選擇)
+                imageUri = null
+                selectedDefaultImageResId = null
 
-                if (med.iconResId != null) {
-                    val context = getApplication<Application>().applicationContext
-                    @Suppress("DiscouragedApi")
-                    val resId = context.resources.getIdentifier(med.iconResId, "drawable", context.packageName)
-                    if (resId != 0) {
-                        selectedDefaultImageResId = resId
-                    } else {
-                        currentIconStringFromDb = med.iconResId
-                    }
-                }
+                // 設置初始圖示狀態，用於UI首次顯示
+                initialIconUriString = med.iconUriString
+                initialIconDrawableResId = med.iconDrawableResId
 
+                // 將用藥時間轉換為 TimeInputState 清單
                 usageTimesList.clear()
-                if (med.usageTimes.isNotEmpty()) {
-                    med.usageTimes.forEach { timeStr ->
-                        val parts = timeStr.split(":")
-                        if (parts.size == 2 && parts[0].length == 2 && parts[1].length == 2) {
-                            usageTimesList.add(TimeInputState(parts[0][0].toString(), parts[0][1].toString(), parts[1][0].toString(), parts[1][1].toString()))
-                        } else {
-                            usageTimesList.add(TimeInputState()) // 如果格式不對，加個空的
-                        }
+                med.usageTimes.forEach { timeStr ->
+                    val parts = timeStr.split(":")
+                    if (parts.size == 2 && parts[0].length == 2 && parts[1].length == 2) {
+                        usageTimesList.add(TimeInputState(parts[0][0].toString(), parts[0][1].toString(), parts[1][0].toString(), parts[1][1].toString()))
+                    } else {
+                        usageTimesList.add(TimeInputState())
                     }
                 }
-                if (usageTimesList.isEmpty()) { // 如果沒有時間或解析失敗，至少提供一個輸入框
-                    usageTimesList.add(TimeInputState())
-                }
+                if (usageTimesList.isEmpty()) usageTimesList.add(TimeInputState()) // 預設新增一筆
             }
         }
     }
 
-
-
+    // 表單輸入處理
     fun onMedicationNameChange(newName: String) {
         medicationName = newName
         medicationNameError = null
@@ -131,11 +173,14 @@ class EditMedicationViewModel(
         }
     }
 
+    // 用藥時間欄位操作
     fun addTimeField() { if (usageTimesList.size < 4) usageTimesList.add(TimeInputState()) }
+
     fun removeTimeField(timeState: TimeInputState) {
         if (usageTimesList.size > 1) usageTimesList.remove(timeState)
         else usageTimesList[0] = TimeInputState() // 清空最後一個
     }
+
     fun updateTimeDigit(timeId: String, digitIndex: Int, digitValue: String) {
         val index = usageTimesList.indexOfFirst { it.id == timeId }
         if (index != -1) {
@@ -150,6 +195,7 @@ class EditMedicationViewModel(
         }
     }
 
+    // 驗證邏輯
     private fun validateAllInputsForUpdate(): Boolean {
         onMedicationNameChange(medicationName)
         onTotalQuantityChange(totalQuantityInput)
@@ -172,6 +218,7 @@ class EditMedicationViewModel(
                 allAttemptedTimesAreValid
     }
 
+    //更新藥品資料並設定提醒
     @RequiresApi(Build.VERSION_CODES.S)
     fun updateMedication(onSuccess: () -> Unit) {
         if (!validateAllInputsForUpdate()) {
@@ -184,26 +231,35 @@ class EditMedicationViewModel(
             val quantity = totalQuantityInput.toInt()
             val validTimes = usageTimesList.mapNotNull { it.toTimeString() }
 
-            // 處理剩餘量：如果總量減少且少於原剩餘量，則剩餘量等於新總量。否則按比例或保持。
-            // 簡單策略：如果總量減少，剩餘量不能超過新總量。如果總量增加，維持原剩餘量或按比例增加。
-            // 這裡使用一個相對保守的策略：
+            // --- 決定最終的圖示資訊，基於 Medication 模型的新欄位 ---
+            var finalIconUriString: String? = null
+            @DrawableRes var finalIconDrawableResId: Int? = null
+
+            if (imageUri != null) { // 1. 用戶新選擇了相簿圖片 (imageUri 是複製到內部的 URI)
+                finalIconUriString = imageUri.toString()
+                finalIconDrawableResId = null
+            } else if (selectedDefaultImageResId != null) { // 2. 用戶新選擇了預設圖示列表中的圖示
+                finalIconDrawableResId = selectedDefaultImageResId
+                finalIconUriString = null
+            } else { // 3. 用戶未做任何圖示更改，保留原始圖示
+                finalIconUriString = oldMed.iconUriString
+                finalIconDrawableResId = oldMed.iconDrawableResId
+            }
+            // 如果原始圖示也沒有，可以設定一個應用程式級別的預設
+            if (finalIconUriString == null && finalIconDrawableResId == null) {
+                finalIconDrawableResId = R.drawable.ic_default_med
+            }
+
             val newRemainingQuantity = when {
                 quantity < oldMed.totalQuantity -> minOf(oldMed.remainingQuantity, quantity) // 總量減少，剩餘不超新總量
                 quantity > oldMed.totalQuantity -> oldMed.remainingQuantity + (quantity - oldMed.totalQuantity) // 總量增加，增加的量也算入剩餘
                 else -> oldMed.remainingQuantity // 總量不變，剩餘不變
             }.coerceIn(0, quantity)
 
-            val finalIconString: String? = when {
-                imageUri != null -> imageUri.toString()
-                selectedDefaultImageResId != null -> {
-                    val resName = getApplication<Application>().resources.getResourceEntryName(selectedDefaultImageResId!!)
-                    resName
-                }
-                else -> currentIconStringFromDb // 沒變更圖片時，保留原來的
-            }
             val updatedMedication = oldMed.copy(
                 name = name,
-                iconResId = finalIconString,
+                iconUriString = finalIconUriString,
+                iconDrawableResId = finalIconDrawableResId,
                 usageTimes = validTimes,
                 totalQuantity = quantity,
                 remainingQuantity = newRemainingQuantity
@@ -218,6 +274,7 @@ class EditMedicationViewModel(
         }
     }
 
+    // 刪除藥品資料
     @RequiresApi(Build.VERSION_CODES.S)
     fun deleteMedication(onSuccess: () -> Unit) {
         originalMedication?.let { medToDelete ->
@@ -230,6 +287,7 @@ class EditMedicationViewModel(
         }
     }
 
+    // 設定與取消提醒鬧鐘
     @RequiresApi(Build.VERSION_CODES.S)
     private fun scheduleNotificationsForMedication(medicationWithId: Medication) {
         val context = getApplication<Application>().applicationContext
@@ -284,10 +342,8 @@ class EditMedicationViewModel(
 
 
     private fun cancelScheduledNotifications(medication: Medication) {
-        // ... (與 AddMedicationViewModel 中的邏輯相同或提取為共用 Util)
         val context = getApplication<Application>().applicationContext
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-        // ... (完整的取消鬧鐘邏輯)
         medication.usageTimes.forEachIndexed { index, _ ->
             val intent = Intent(context, AlarmReceiver::class.java).apply { action = "com.example.health stash.TAKE_MEDICATION" }
             val reqCode = medication.id * 1000 + index
@@ -296,7 +352,7 @@ class EditMedicationViewModel(
         }
     }
 
-    // Factory for creating EditMedicationViewModel with medicationId
+    // ViewModel 提供建構方法
     companion object {
         fun Factory(application: Application, medicationId: Int): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {

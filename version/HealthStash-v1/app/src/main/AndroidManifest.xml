@@ -2,10 +2,14 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- 權限區塊 -->
+    <!-- 發送通知的權限（Android 13+ 需要此權限） -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
+    <!-- 設定精確鬧鐘的權限（Android 12+） -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!-- 一般鬧鐘權限（某些裝置仍可能要求） -->
     <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- 裝置開機完成後接收廣播，以便重設鬧鐘或通知 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
@@ -19,17 +23,29 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HealthStash"
         tools:targetApi="31">
+
+        <!-- 主啟動 Activity -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:theme="@style/Theme.HealthStash">
             <intent-filter>
+                <!-- 定義此 Activity 為主入口 -->
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <receiver android:name=".util.AlarmReceiver" android:exported="true" />
+
+        <!-- 鬧鐘接收器 -->
+        <receiver
+            android:name=".util.AlarmReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 </manifest>
